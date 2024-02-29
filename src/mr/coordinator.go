@@ -18,8 +18,8 @@ type Coordinator struct {
 	inputFiles []string
 	nMap       int
 	nReduce    int
-	mapTask    TaskQueue
-	reduceTask TaskQueue
+	mapTask    []Task
+	reduceTask []Task
 	cond       Condition
 }
 
