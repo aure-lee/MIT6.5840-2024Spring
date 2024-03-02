@@ -1,8 +1,11 @@
 package mr
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"log"
 	"net/rpc"
 	"os"
@@ -38,24 +41,22 @@ func Worker(mapf func(string, string) []KeyValue,
 		}
 
 		switch reqReplys.TaskType {
-		case WaitTask:
-			{
-				time.Sleep(time.Second)
-				fmt.Println("Wait for task.")
-			}
-		case ExitTask:
-			{
-				fmt.Printf("Worker %v exit.", os.Getpid())
-				os.Exit(0)
-			}
 		case MapTask:
-			{
-
-			}
+			doMap(mapf, reqReplys)
+			rptArgs := ReportTaskArgs{reqReplys.TaskType, reqReplys.TaskID, os.Getpid()}
+			reportTask(&rptArgs)
+			fmt.Printf("Map Task %v is finished.\n", reqReplys.TaskID)
 		case ReduceTask:
-			{
-
-			}
+			doReduce(reducef, reqReplys)
+			rptArgs := ReportTaskArgs{reqReplys.TaskType, reqReplys.TaskID, os.Getpid()}
+			reportTask(&rptArgs)
+			fmt.Printf("Reduce Task %v is finished.\n", reqReplys.TaskID)
+		case WaitTask:
+			time.Sleep(time.Second)
+			fmt.Println("Waiting for task.")
+		case ExitTask:
+			fmt.Printf("Worker %v exit.\n", os.Getpid())
+			os.Exit(0)
 		}
 	}
 }
@@ -63,12 +64,79 @@ func Worker(mapf func(string, string) []KeyValue,
 func requestTask() (*RequestTaskReplys, bool) {
 	args := RequestTaskArgs{os.Getpid()}
 	replys := RequestTaskReplys{}
-	ok := call("Coordinator.DistTask", &args, &replys)
+	ok := call("Coordinator.RequestTask", &args, &replys)
 
 	return &replys, ok
 }
 
-func doMap(mapf func(string, string) []KeyValue, replys *RequestTaskReplys) {}
+func reportTask(args *ReportTaskArgs) bool {
+	replys := ReportTaskReplys{}
+	ok := call("Coordinator.ReportTask", &args, &replys)
+
+	return ok
+}
+
+func writeIntoTmpFiles(mapId, numFiles int, kva []KeyValue) {
+	prefix := fmt.Sprintf("mr-%v-", mapId)
+	files := make([]*os.File, numFiles)
+	writers := make([]*bufio.Writer, numFiles)
+	encoders := make([]*json.Encoder, numFiles)
+
+	for i := 0; i < numFiles; i++ {
+		filename := fmt.Sprintf("%v%v", prefix, i)
+		file, err := os.Create(filename)
+		if err != nil {
+			log.Fatalf("Cannot create tmp file %v", filename)
+		}
+		defer file.Close()
+		files[i] = file
+		writers[i] = bufio.NewWriter(file)
+		encoders[i] = json.NewEncoder(writers[i]) // 每个 json.Encoder 实例通过 json.NewEncoder(buf) 创建，并与一个 bufio.Writer 绑定
+	}
+
+	// write map outputs to temp files
+	for _, kv := range kva {
+		idx := ihash(kv.Key) % numFiles
+		err := encoders[idx].Encode(&kv)
+		if err != nil {
+			log.Fatal("Cannot encode kv pair.")
+		}
+	}
+
+	// flush file buffer into disk
+	for _, w := range writers {
+		err := w.Flush()
+		if err != nil {
+			log.Fatal("Cannot flush file buffer")
+		}
+	}
+}
+
+func doMap(mapf func(string, string) []KeyValue, replys *RequestTaskReplys) {
+	intermediate := []KeyValue{}
+	inputfiles := replys.InputFiles
+
+	for _, filename := range inputfiles {
+		file, err := os.Open(filename)
+		if err != nil {
+			log.Fatalf("Cannot open %v", filename)
+		}
+		content, err := io.ReadAll(file)
+		if err != nil {
+			log.Fatalf("Cannot read %v", filename)
+		}
+		file.Close()
+
+		kva := mapf(filename, string(content))
+
+		intermediate = append(intermediate, kva...)
+	}
+
+	// sort
+
+	// write into files
+	writeIntoTmpFiles(replys.TaskID, replys.ReduceNum, intermediate)
+}
 
 func doReduce(reducef func(string, []string) string, replys *RequestTaskReplys) {}
 

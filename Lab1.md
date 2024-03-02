@@ -21,6 +21,35 @@
 3. 如果修改了mr文件夹的内容，需要重新构建 `wc.so`。
 4. 这个实验在同一台机器上运行，依赖本地的文件系统，但如果工作者运行在不同的机器上，则需要一个类似 GFS 的全局文件系统。
 5. 中间文件命名为 `mr-X-Y`，其中 X 是 map 任务号，Y 是 reduce 任务号。(一个map生成的中间文件分成 `nReduce` 份。)
+6. Worker 的 map 任务代码需要一种方法，将中间 `key/value pair` 存储在文件中，以便在 reduce 任务中正确读回。其中一种方法是使用 Go 的 `encoding/json` 包。将 JSON 格式的 `key/value pair` 写入开放文件：
+
+    enc := json.NewEncoder(file)
+    for _, kv := ... {
+        err := enc.Encode(&kv)
+
+并读回这样的文件：
+
+    dec := json.NewDecoder(file)
+    for {
+        var kv KeyValue
+        if err := dec.Decode(&kv); err != nil {
+            break
+        }
+        kva = append(kva, kv)
+    }
+
+因为真实的分布式系统都是在网络上的，网络数据传输使用的是 `json` 格式。这样可以模拟网络传输。
+7. Worker 的 map 部分可以使用 `ihash(key)` 函数为给定 key 挑选还原任务。为了减小输出文件的数量，可以使用 `ihash(key) % nReduce` ，让相同的key传入到一个文件中。
+8. 参考 `mrsequential.go` 文件，实现 Map 阶段读取文件，Map和Reduce阶段对 `key/value pair` 进行排序，Reduce 阶段输出文件。
+9. 作为 RPC 服务器，协调器将是并发的；不要忘记锁定共享数据。(锁定任务)
+10. `go run -race`: 使用Go的竞态检测器，`test-mr.sh` 有关于如何使用的说明。
+11. Workers 有时需要等待，例如在最后一个 `map task` 完成之前，`reduce task` 不能开始。一种方案是，Worker定期向coordinator请求任务，等待时间使用 `time.Sleep()` 。另一种方案是，Coordinator中的相关RPC处理程序可以使用 `time.Sleep()` 或 `sync.Cond` 循环等待。在 Coordinator 中，新建一个线程处理每个RPC，因此一个处理程序正在等待时，不妨碍 Coordinator 处理其他的RPC。
+12. Coordinator 无法区分崩溃的 Worker，存活但停滞的Worker，以及正在执行但速度太慢的 Worker。最好的办法是让 Coordinator 等待一段时间，然后放弃并重新分配。在本实验中，让 Coordinator 等待10秒。
+13. 如果选择执行备份任务（Section 3.6），会测试代码是否在 Worker 执行任务而不崩溃的情况下安排无关的任务。备份任务只能在一段相对较长的时间后安排（如10秒）。
+14. 使用 `mrapps/crash.go` 应用插件，可以测试崩溃恢复功能。
+15. 为了确保没有Worker在执行 Reduce 时观察到崩溃的部分写入的文件，MapReduce论文提到了使用临时文件，并在完全写入后原子重命名的技巧。可以使用 `ioutil.TempFile` 或 `os.CreateTemp` (Go 1.17 and later)创建临时文件，并使用 `os.Rename` 原子重命名临时文件。
+16. `test-mr.sh` 的所有进程都在 `mr-tmp` 子目录下运行，因此如果出现问题，可以在该目录下查看中间文件。可以随意修改 `test-mr.sh`，使其在测试失败后退出，这样脚本就不会继续执行（并覆盖输出文件）。
+17. `test-mr-many.sh` 会连续多次运行 `test-mr.sh`，这是为了发现低概率错误。它的参数是运行测试的次数。不应并行运行多个 `test-mr.sh`，因为 coordinator 会重复使用同一个 socket，从而导致冲突。
 
 ## Your Job
 
