@@ -3,3 +3,5 @@ api.key
 .api.key.trimmed
 *-handin.tar.gz
 .idea
+src/main/tmp
+src/main/mr-*

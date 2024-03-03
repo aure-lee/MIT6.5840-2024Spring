@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const TmpPath = "/var/tmp/"
+const TempDir = "./tmp"
 
 type TaskType int // the type of task
 type TaskStat int // the status of the task
@@ -41,7 +41,6 @@ type Task struct {
 	TaskType   TaskType
 	TaskStat   TaskStat
 	InputFiles []string
-	StartTime  time.Time
 	TaskID     int
 	WorkerID   int
 }
@@ -64,10 +63,13 @@ func (c *Coordinator) RequestTask(args *RequestTaskArgs, replys *RequestTaskRepl
 	if c.phase == MapPhase {
 		// distribute the map task
 		task := c.selectTask(c.phase)
+		task.WorkerID = args.WorkerID
 		replys.TaskType = task.TaskType
 		replys.InputFiles = task.InputFiles
 		replys.TaskID = task.TaskID
 		replys.ReduceNum = c.nReduce
+
+		// fmt.Println("RequestTask: selected task: ", *task)
 
 		// after distributing the task, start timing, and after timeout the task is marked as NotAssign
 		go c.checkTimeout(args.WorkerID, task)
@@ -76,15 +78,19 @@ func (c *Coordinator) RequestTask(args *RequestTaskArgs, replys *RequestTaskRepl
 		// distribut the reduce task
 		// TODO:
 		task := c.selectTask(c.phase)
+		task.WorkerID = args.WorkerID
 		replys.TaskType = task.TaskType
 		replys.InputFiles = task.InputFiles
 		replys.TaskID = task.TaskID
 		replys.ReduceNum = c.nReduce
 
+		// fmt.Println("RequestTask: selected task: ", *task)
+
 		go c.checkTimeout(args.WorkerID, task)
 	} else {
 		replys.TaskType = ExitTask
 	}
+
 	return nil
 }
 
@@ -111,7 +117,7 @@ func (c *Coordinator) selectTask(phase Phase) *Task {
 		}
 	}
 
-	return &Task{WaitTask, Finished, []string{}, time.Now(), -1, -1}
+	return &Task{WaitTask, Finished, []string{}, -1, -1}
 }
 
 func (c *Coordinator) checkTimeout(workerId int, task *Task) {
@@ -127,7 +133,7 @@ func (c *Coordinator) checkTimeout(workerId int, task *Task) {
 	if (task.WorkerID == workerId && task.TaskStat == Assigned) || task.WorkerID != workerId {
 		task.TaskStat = NotAssign
 		task.WorkerID = -1
-		fmt.Printf("%v task %v do not finish.\n", task.TaskType, task.TaskID)
+		// fmt.Printf("%v task %v do not finish.\n", task.TaskType, task.TaskID)
 	}
 }
 
@@ -145,6 +151,7 @@ func (c *Coordinator) ReportTask(args *ReportTaskArgs, replys *ReportTaskReplys)
 	defer c.mu.Unlock()
 
 	if task.WorkerID == args.WorkerID && task.TaskStat == Assigned {
+		// fmt.Println("Task has finished.")
 		task.TaskStat = Finished
 		if task.TaskType == MapTask {
 			c.nMap++
@@ -161,7 +168,7 @@ func (c *Coordinator) makeMapTask() {
 		inputFiles := make([]string, 0)
 		inputFiles = append(inputFiles, c.inputFiles[mapId])
 
-		task := &Task{MapTask, NotAssign, inputFiles, time.Time{}, mapId, -1}
+		task := &Task{MapTask, NotAssign, inputFiles, mapId, -1}
 		c.mapTask = append(c.mapTask, *task)
 	}
 
@@ -174,7 +181,7 @@ func (c *Coordinator) makeReduceTask() {
 
 	for reduceId := 0; reduceId < c.nReduce; reduceId++ {
 		// read all files in TmpPath
-		pattern := fmt.Sprintf("%v/mr-*-%d", TmpPath, reduceId)
+		pattern := fmt.Sprintf("%v/mr-*-%d", TempDir, reduceId)
 
 		// 使用Glob找到所有匹配的文件
 		files, err := filepath.Glob(pattern)
@@ -183,7 +190,7 @@ func (c *Coordinator) makeReduceTask() {
 			return
 		}
 
-		task := &Task{ReduceTask, NotAssign, files, time.Time{}, reduceId, -1}
+		task := &Task{ReduceTask, NotAssign, files, reduceId, -1}
 		c.reduceTask = append(c.reduceTask, *task)
 	}
 
@@ -212,6 +219,24 @@ func (c *Coordinator) checkPhase() {
 
 		c.mu.Unlock()
 	}
+}
+
+func createTmpDir() {
+	if _, err := os.Stat(TempDir); err == nil {
+		// files, err := ioutil.ReadDir()
+		files, err := os.ReadDir(TempDir)
+		if err != nil {
+			log.Fatalf("Failed to read directory: %s", err)
+		}
+
+		for _, file := range files {
+			os.RemoveAll(filepath.Join(TempDir, file.Name()))
+		}
+	} else if os.IsNotExist(err) {
+		os.Mkdir(TempDir, 0777)
+	}
+
+	os.Chmod(TempDir, 0777)
 }
 
 // start a thread that listens for RPCs from worker.go
@@ -247,6 +272,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.nMap = len(files)
 	c.nReduce = nReduce
 	c.phase = MapPhase
+	createTmpDir()
 	c.makeMapTask()
 
 	go c.checkPhase()

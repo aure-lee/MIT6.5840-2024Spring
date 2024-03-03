@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"sort"
 	"time"
 )
 
@@ -17,6 +18,13 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
@@ -45,17 +53,17 @@ func Worker(mapf func(string, string) []KeyValue,
 			doMap(mapf, reqReplys)
 			rptArgs := ReportTaskArgs{reqReplys.TaskType, reqReplys.TaskID, os.Getpid()}
 			reportTask(&rptArgs)
-			fmt.Printf("Map Task %v is finished.\n", reqReplys.TaskID)
+			// fmt.Printf("Map Task %v is finished.\n", reqReplys.TaskID)
 		case ReduceTask:
 			doReduce(reducef, reqReplys)
 			rptArgs := ReportTaskArgs{reqReplys.TaskType, reqReplys.TaskID, os.Getpid()}
 			reportTask(&rptArgs)
-			fmt.Printf("Reduce Task %v is finished.\n", reqReplys.TaskID)
+			// fmt.Printf("Reduce Task %v is finished.\n", reqReplys.TaskID)
 		case WaitTask:
-			time.Sleep(time.Second)
-			fmt.Println("Waiting for task.")
+			time.Sleep(time.Second * 3)
+			// fmt.Println("Waiting for task.")
 		case ExitTask:
-			fmt.Printf("Worker %v exit.\n", os.Getpid())
+			// fmt.Printf("Worker %v exit.\n", os.Getpid())
 			os.Exit(0)
 		}
 	}
@@ -66,6 +74,10 @@ func requestTask() (*RequestTaskReplys, bool) {
 	replys := RequestTaskReplys{}
 	ok := call("Coordinator.RequestTask", &args, &replys)
 
+	if !ok {
+		fmt.Println("Request Task error.")
+	}
+
 	return &replys, ok
 }
 
@@ -73,25 +85,29 @@ func reportTask(args *ReportTaskArgs) bool {
 	replys := ReportTaskReplys{}
 	ok := call("Coordinator.ReportTask", &args, &replys)
 
+	if !ok {
+		fmt.Println("Report task error.")
+	}
+
 	return ok
 }
 
 func writeIntoTmpFiles(mapId, numFiles int, kva []KeyValue) {
-	prefix := fmt.Sprintf("mr-%v-", mapId)
-	files := make([]*os.File, numFiles)
-	writers := make([]*bufio.Writer, numFiles)
-	encoders := make([]*json.Encoder, numFiles)
+
+	files := make([]*os.File, 0, numFiles)
+	writers := make([]*bufio.Writer, 0, numFiles)
+	encoders := make([]*json.Encoder, 0, numFiles)
 
 	for i := 0; i < numFiles; i++ {
-		filename := fmt.Sprintf("%v%v", prefix, i)
-		file, err := os.Create(filename)
+		filename := fmt.Sprintf("mr-%v-%v", mapId, i)
+		file, err := os.CreateTemp(TempDir, filename)
 		if err != nil {
-			log.Fatalf("Cannot create tmp file %v", filename)
+			fmt.Println("Failed to create temp file:", err)
 		}
-		defer file.Close()
-		files[i] = file
-		writers[i] = bufio.NewWriter(file)
-		encoders[i] = json.NewEncoder(writers[i]) // 每个 json.Encoder 实例通过 json.NewEncoder(buf) 创建，并与一个 bufio.Writer 绑定
+		files = append(files, file)
+		writers = append(writers, bufio.NewWriter(file))
+		// 每个 json.Encoder 实例通过 json.NewEncoder(buf) 创建，并与一个 bufio.Writer 绑定
+		encoders = append(encoders, json.NewEncoder(writers[i]))
 	}
 
 	// write map outputs to temp files
@@ -99,7 +115,7 @@ func writeIntoTmpFiles(mapId, numFiles int, kva []KeyValue) {
 		idx := ihash(kv.Key) % numFiles
 		err := encoders[idx].Encode(&kv)
 		if err != nil {
-			log.Fatal("Cannot encode kv pair.")
+			log.Fatalln("Cannot encode kv pair.")
 		}
 	}
 
@@ -107,12 +123,21 @@ func writeIntoTmpFiles(mapId, numFiles int, kva []KeyValue) {
 	for _, w := range writers {
 		err := w.Flush()
 		if err != nil {
-			log.Fatal("Cannot flush file buffer")
+			log.Fatalln("Cannot flush file buffer")
+		}
+	}
+
+	for i, file := range files {
+		file.Close()
+		newName := fmt.Sprintf("%v/mr-%v-%v", TempDir, mapId, i)
+		err := os.Rename(file.Name(), newName)
+		if err != nil {
+			fmt.Printf("File %v rename error\n", newName)
 		}
 	}
 }
 
-func doMap(mapf func(string, string) []KeyValue, replys *RequestTaskReplys) {
+func doMap(mapf func(string, string) []KeyValue, replys *RequestTaskReplys) error {
 	intermediate := []KeyValue{}
 	inputfiles := replys.InputFiles
 
@@ -133,12 +158,59 @@ func doMap(mapf func(string, string) []KeyValue, replys *RequestTaskReplys) {
 	}
 
 	// sort
+	sort.Sort(ByKey(intermediate))
 
 	// write into files
 	writeIntoTmpFiles(replys.TaskID, replys.ReduceNum, intermediate)
+
+	return nil
 }
 
-func doReduce(reducef func(string, []string) string, replys *RequestTaskReplys) {}
+func doReduce(reducef func(string, []string) string, replys *RequestTaskReplys) {
+	fileId := replys.TaskID
+	inputFiles := replys.InputFiles
+
+	kva := map[string][]string{}
+
+	for _, filename := range inputFiles {
+		file, err := os.Open(filename)
+		if err != nil {
+			fmt.Printf("%v cannot open.\n", filename)
+		}
+
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			kva[kv.Key] = append(kva[kv.Key], kv.Value)
+		}
+	}
+
+	keys := []string{}
+	for key := range kva {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	tempName := fmt.Sprintf("mr-out-%v", fileId)
+	tempFile, _ := os.CreateTemp(TempDir, tempName)
+
+	for _, key := range keys {
+		output := reducef(key, kva[key])
+
+		fmt.Fprintf(tempFile, "%v %v\n", key, output)
+	}
+
+	tempFile.Close()
+	newName := fmt.Sprintf("./mr-out-%v", fileId)
+	err := os.Rename(tempFile.Name(), newName)
+
+	if err != nil {
+		fmt.Printf("Reduce file %v rename error.\n", fileId)
+	}
+}
 
 // example function to show how to make an RPC call to the coordinator.
 //
