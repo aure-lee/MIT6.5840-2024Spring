@@ -221,6 +221,7 @@ func (c *Coordinator) checkPhase() {
 	}
 }
 
+// 可以使用系统自身的/tmp文件夹，自己创建文件夹时，需要注意文件夹的权限
 func createTmpDir() {
 	if _, err := os.Stat(TempDir); err == nil {
 		// files, err := ioutil.ReadDir()

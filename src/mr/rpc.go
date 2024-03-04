@@ -27,6 +27,7 @@ type ExampleReply struct {
 // Add your RPC definitions here.
 
 // Worker requests tasks
+// 这个 WorkerId 在这个实验中可以省略
 type RequestTaskArgs struct {
 	WorkerID int
 }
