@@ -97,3 +97,19 @@ type Task struct {
 
 首先，ReduceTask生成的时间在 `Coordinator` 从 `MapPhase` 转到 `ReducePhase` 的阶段。
 同时，ReduceTask的生成需要依赖上一阶段 Map 生成的中间文件 `mr-tmp-X-Y` ，将同一个 `Y` 分成一组，作为一个 IuputFiles，传递给 `worker` 。
+
+## 4 请求task和报告task
+
+### 4.1 worker请求task和报告task
+
+worker通过RPC请求coordinator来请求和报告task，只需要把arg的参数设置好，使用 `call("Coordinator.RequestTask/ReportTask")` 。
+
+### 4.2 coordinator响应请求task和报告task
+
+请求task：根据 coordinator 当前的状态，选择任务给 replys，同时启动一个 goroutine 检测 `timeout`。如果发送的任务是 `wait/exit`，则不用进行任何操作。
+
+报告task：根据 `workerId` 和 `task` 的状态，转换当前 `task` 的状态。1. task信息与report的信息可以对上，`task` 转换为 `Finished`， 同时额外维护一个int型数据，保存Map/Reduce阶段已经完成的任务数。2. 信息不符，`task` 转换为 `NotAssign`。
+
+## 5 Coordinator的状态
+
+在启动 Coordinator Server 之前，新启动一个一直循环的 goroutine，在其中检测当前 `phase`，当已完成的任务数 == 总任务数时，coordinator 转换为下一个阶段。
