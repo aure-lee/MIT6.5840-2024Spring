@@ -1,5 +1,7 @@
 # Lab 2: Key/Value Server
 
+呃呃，Lab2做到Lab4上了，花一天重做一遍，我说我怎么跑不过测试 :sweat_smile:
+
 ## 1 实现One Client和Many Clients - Maybe solve
 
 Server的 KV 添加一个字段：`data map[string]string`，用来存储对应的 `KV pair`。
@@ -17,31 +19,21 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 	// key do not exist
 	if _, exists := kv.data[args.Key]; !exists {
-		reply.Err = ErrNoKey
 		return
 	}
-
-	reply.Err = OK
 }
 ```
 
 ```go
-func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
+func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
-
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
-	if args.Op == "Put" {
-
-		kv.data[args.Key] = args.Value
-
-	} else if args.Op == "Append" {
-        // 查看test_test.go，得知是直接字符串拼接，不是转换成Int型相加
-		kv.data[args.Key] = kv.data[args.Key] + args.Value
-	}
-
-	reply.Err = OK
+	// return old value
+	reply.Value = kv.data[args.Key]
+	// append map[key]
+	kv.data[args.Key] = kv.data[args.Key] + args.Value
 }
 ```
 
@@ -53,31 +45,25 @@ func (ck *Clerk) Get(key string) string {
 
     args := GetArgs{key}
     reply = GetReply{}
-    ok := ck.servers[0].Call("KVServer.Get", &args, &reply)
+    ok := ck.server.Call("KVServer.Get", &args, &reply)
 
 	return reply.Value
 }
 ```
 
 ```go
-func (ck *Clerk) PutAppend(key string, value string, op string) {
+func (ck *Clerk) PutAppend(key string, value string, op string) string {
 	// You will have to modify this function.
 
-	// Client need to send message to every server(this is maybe wrong)
-	for i := 0; i < len(ck.servers); i++ {
+	args := PutAppendArgs{key, value}
+	reply := PutAppendReply{}
+	ok := ck.server.Call("KVServer."+op, &args, &reply)
 
-        args := PutAppendArgs{key, value, op}
-        reply := PutAppendReply{}
-        ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
-	}
-
-    // if reply.Err != OK {
-	// 	log.Fatal(reply.Err)
-	// }
+	return reply.Value
 }
 ```
 
-## 2 实现有丢包的Test - Maybe solve
+## 2 实现有丢包的Test
 
 丢包有两种：1. `args` 包被丢弃。2. `replys` 包被丢弃。
 
@@ -100,6 +86,12 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 同时为了避免客户端之间的冲突，对每个客户端生成一个单独的重复表。
 
 ```go
+// 先保存完整的dupTable，不考虑如何减小dupTable的规模
+// PutReply 保存 ""
+// AppendReply/GetReply 保存 应该返回的string
+// 优化方向：duplicateTable只保存一个客户端最近的Reply，因为对某个特定的客户端来说，
+// 他的请求一定是顺序发送的，某个请求之前的回复客户端都已经收到了
+// 因此，dupTable只需要存储client[i]最近完成的Reply即可
 type dupTable map[int64]string
 
 type KVServer struct {
@@ -124,10 +116,13 @@ Server端需要加上关于 `duplicateTable` 的处理逻辑：
 
 	// if seq exist
 	if v, exists := dt[args.Seq]; exists {
-        reply.Value = v // if put
-		reply.Err = OK
+		reply.Value = v
 		return
 	}
+
+	delete(dt, args.Seq-1)
+	reply.Value = kv.data[args.Key]
+	dt[args.Seq] = reply.Value
     // ...
     // 未全部给出
 ```
@@ -144,25 +139,45 @@ Server端需要加上关于 `duplicateTable` 的处理逻辑：
 	for !ok {
 		args := GetArgs{key, ck.clientId, ck.seq}
 		reply = GetReply{}
-		ok = ck.servers[0].Call("KVServer.Get", &args, &reply)
+		ok = ck.server.Call("KVServer."+op, &args, &reply)
 	}
 ```
 
-`go test -race` 的结果如下：
+此时运行`go test`，会提示使用了太多空间，这里有一个Go语言的特性，直接使用 `delete` 不会释放 `map` 里的空间，重新写一个数据结构保存最近的条目。
 
-```text
-lee@lee-virtual-machine:~/6.5840/src/kvraft$ go test -race
-Test: one client (4A) ...
-  ... Passed --  15.2  5 29379 9791
-Test: ops complete fast enough (4A) ...
-  ... Passed --   1.5  3  3002    0
-Test: many clients (4A) ...
-  ... Passed --  16.0  5 121037 40117
-Test: unreliable net, many clients (4A) ...
-  ... Passed --  15.4  5  5346 1430
-Test: concurrent append to same key, unreliable (4A) ...
-  ... Passed --   0.6  3   178   52
-Test: progress in majority (4A) ...
+## 3 优化存储空间
+
+此部分Client不需要更改，只需要专注 Server 即可。
+
+`dupTable` 修改如下：
+
+```go
+type dupTable struct {
+	seq   int
+	value string
+}
 ```
+Server 的 Get函数修改如下：为了更好的节省空间，当一个客户端没有发送过数据时，不需要创建 `dupTable` 表，直接返回当前 Server的 `map[key]`。
 
-`Test: progress in majority (4A) ...`，这个测试涉及到了leader的选举，还未完成。
+```go
+	// duplicate detection
+	// if client is new, create the map of clientid -> duplicateTable
+	if kv.clientTable[args.ClientId] == nil {
+		// 当这个client没有写入操作时，它读取的数据永远是当前的服务器Value
+		reply.Value = kv.data[args.Key]
+		return
+	}
+
+	// 这里有个坑，注意指针引用
+	dt := kv.clientTable[args.ClientId]
+
+	// if seq exists
+	if dt.seq == args.Seq {
+		reply.Value = dt.value
+		return
+	}
+
+	dt.seq = args.Seq
+	dt.value = kv.data[args.Key]
+	reply.Value = dt.value
+```
