@@ -2,7 +2,7 @@
 
 呃呃，Lab2做到Lab4上了，花一天重做一遍，我说我怎么跑不过测试 :sweat_smile:
 
-## 1 实现One Client和Many Clients - Maybe solve
+## 1 实现One Client和Many Clients
 
 Server的 KV 添加一个字段：`data map[string]string`，用来存储对应的 `KV pair`。
 
@@ -181,3 +181,5 @@ Server 的 Get函数修改如下：为了更好的节省空间，当一个客户
 	dt.value = kv.data[args.Key]
 	reply.Value = dt.value
 ```
+
+实际上 `Get` 函数和 `Put` 函数都不会涉及到重复发送问题，`dupTable` 只需要应用与 `Append()` 函数。

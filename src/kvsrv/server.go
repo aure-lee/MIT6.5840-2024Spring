@@ -72,7 +72,9 @@ func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 	// duplicate detection
 	// if client is new, create the map of clientid -> duplicateTable
 	if kv.clientTable[args.ClientId] == nil {
-		kv.clientTable[args.ClientId] = &dupTable{-1, ""}
+		kv.data[args.Key] = args.Value
+		return
+		// kv.clientTable[args.ClientId] = &dupTable{-1, ""}
 	}
 
 	dt := kv.clientTable[args.ClientId]
