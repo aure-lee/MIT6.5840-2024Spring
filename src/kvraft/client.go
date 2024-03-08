@@ -10,8 +10,6 @@ import (
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
-	clientId int64
-	seq      int64 // 序列号：不重复的RPC发送不重复的seq，重复的RPC发送同一个seq
 }
 
 func nrand() int64 {
@@ -24,11 +22,7 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
-
 	// You'll have to add code here.
-	ck.clientId = nrand()
-	ck.seq = 0
-
 	return ck
 }
 
@@ -43,20 +37,9 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) string {
+
 	// You will have to modify this function.
-
-	var reply GetReply
-	ok := false
-
-	ck.seq++
-
-	for !ok {
-		args := GetArgs{key, ck.clientId, ck.seq}
-		reply = GetReply{}
-		ok = ck.servers[0].Call("KVServer.Get", &args, &reply)
-	}
-
-	return reply.Value
+	return ""
 }
 
 // shared by Put and Append.
@@ -69,23 +52,6 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
-
-	ck.seq++
-
-	// Client need to send message to every server
-	for i := 0; i < len(ck.servers); i++ {
-
-		ok := false
-		for !ok {
-			args := PutAppendArgs{key, value, op, ck.clientId, ck.seq}
-			reply := PutAppendReply{}
-			ok = ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
-		}
-	}
-
-	// if reply.Err != OK {
-	// 	log.Fatal(reply.Err)
-	// }
 }
 
 func (ck *Clerk) Put(key string, value string) {
