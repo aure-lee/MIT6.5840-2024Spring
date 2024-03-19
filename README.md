@@ -6,3 +6,4 @@
 - Lab2: Key/Value Server [Lab2-solution](solution/Lab2-solution.md)
 - Lab3A: Leader election [Lab3A-solution](solution/Lab3A-solution.md)
 - Lab3B: Log [Lab3B-solution](solution/Lab3B-solution.md)
+- Lab3C: Persist [Lab3C-solution](solution/Lab3C-solution.md)

@@ -18,13 +18,14 @@ package raft
 //
 
 import (
-	//	"bytes"
+	"bytes"
+	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	//	"6.5840/labgob"
+	"6.5840/labgob"
 	"6.5840/labrpc"
 )
 
@@ -119,13 +120,13 @@ func (rf *Raft) GetLastLogIndex() int {
 // (or nil if there's not yet a snapshot).
 func (rf *Raft) persist() {
 	// Your code here (3C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// raftstate := w.Bytes()
-	// rf.persister.Save(raftstate, nil)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.logs)
+	raftstate := w.Bytes()
+	rf.persister.Save(raftstate, nil)
 }
 
 // restore previously persisted state.
@@ -134,18 +135,20 @@ func (rf *Raft) readPersist(data []byte) {
 		return
 	}
 	// Your code here (3C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var logs []LogEntry
+	if d.Decode(&currentTerm) != nil ||
+		d.Decode(&votedFor) != nil ||
+		d.Decode(&logs) != nil {
+		log.Fatalln("Is nil")
+	} else {
+		rf.currentTerm = currentTerm
+		rf.votedFor = votedFor
+		rf.logs = logs
+	}
 }
 
 // the service says it has created a snapshot that has
@@ -183,6 +186,8 @@ type RequestVoteReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
+
 	DPrintf("{Server %v, %v, Term %v, Last log index %v} Receive RequestVote from Server %v for term %v and vote for %v\n",
 		rf.me, rf.role, rf.currentTerm, rf.GetLastLogIndex(), args.CandidateId, args.Term, rf.votedFor)
 
@@ -271,6 +276,7 @@ func (rf *Raft) startElection() {
 	rf.currentTerm++
 	rf.votedFor = rf.me
 	rf.mu.Unlock()
+	defer rf.persist()
 
 	// DPrintf("{Server %v, %v, Term %v, Last log index %v} Start Election\n",
 	// 	rf.me, rf.role, rf.currentTerm, rf.GetLastLogIndex())
@@ -320,15 +326,10 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term    int
-	Success bool // true if follower contained entry matching prevLogIndex and prevLogTerm
-}
-
-func (rf *Raft) matchIndexAndTerm(index, term int) bool {
-	if index > rf.GetLastLogIndex() {
-		return false
-	}
-	return index < 0 || rf.logs[index].Term == term
+	Term          int
+	Success       bool // true if follower contained entry matching prevLogIndex and prevLogTerm
+	ConflictIndex int
+	ConflictTerm  int
 }
 
 func (rf *Raft) applyLogs() {
@@ -349,8 +350,10 @@ func (rf *Raft) applyLogs() {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintf("{Server %v, %v, Term %v, Last log index %v} Receive Heartbeat from server %v and term is %v\n",
-		rf.me, rf.role, rf.currentTerm, rf.GetLastLogIndex(), args.LeaderId, args.Term)
+	defer rf.persist()
+
+	DPrintf("{Server %v, %v, Term %v, Last log index %v} Receive Heartbeat from server %v: term is %v log length %v\n",
+		rf.me, rf.role, rf.currentTerm, rf.GetLastLogIndex(), args.LeaderId, args.Term, len(args.Entries))
 
 	// if AppendEntries RPC received from now leader: convert to follower
 	if args.Term < rf.currentTerm {
@@ -363,8 +366,21 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	// 如果有附加日志
-	if !rf.matchIndexAndTerm(args.PrevLogIndex, args.PrevLogTerm) {
+	if args.PrevLogIndex > rf.GetLastLogIndex() {
 		reply.Term, reply.Success = rf.currentTerm, false
+		reply.ConflictIndex = len(rf.logs)
+		reply.ConflictTerm = 0
+		return
+	}
+
+	if args.PrevLogIndex >= 0 && rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
+		reply.Term, reply.Success = rf.currentTerm, false
+		reply.ConflictTerm = rf.logs[args.PrevLogIndex].Term
+		index := args.PrevLogIndex
+		for index >= 0 && rf.logs[index].Term >= reply.ConflictTerm {
+			index--
+		}
+		reply.ConflictIndex = index + 1
 		return
 	}
 
@@ -411,8 +427,8 @@ func (rf *Raft) genAppendEntries(server int) AppendEntriesArgs {
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	DPrintf("{Server %v, %v, Term %v, Last log index %v} Send Heartbeat to server %v\n",
-		rf.me, rf.role, rf.currentTerm, rf.GetLastLogIndex(), server)
+	DPrintf("{Server %v, %v, Term %v, Last log index %v} Send Heartbeat to server %v and logs length %v\n",
+		rf.me, rf.role, rf.currentTerm, rf.GetLastLogIndex(), server, len(args.Entries))
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
 }
@@ -421,6 +437,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 func (rf *Raft) handleAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 
 	rf.lastUpdate = time.Now()
 
@@ -440,9 +457,17 @@ func (rf *Raft) handleAppendEntries(server int, args *AppendEntriesArgs, reply *
 	// 	rf.me, rf.role, rf.currentTerm, rf.GetLastLogIndex(), server, rf.nextIndex[server], rf.matchIndex[server])
 
 	if !reply.Success {
-		if rf.nextIndex[server] > 0 {
-			rf.nextIndex[server]--
+		if reply.ConflictTerm != 0 {
+			index := rf.nextIndex[server] - 1
+			for index >= 0 && rf.logs[index].Term > reply.ConflictTerm {
+				index--
+			}
+			if index > 0 && rf.logs[index].Term == reply.ConflictTerm {
+				rf.nextIndex[server] = index + 1
+				return
+			}
 		}
+		rf.nextIndex[server] = reply.ConflictIndex
 		return
 	}
 
@@ -501,6 +526,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.logs = append(rf.logs, entry)
 	index := rf.GetLastLogIndex()
 	rf.mu.Unlock()
+	rf.persist()
+
+	DPrintf("{Server %v, %v, Term %v, Last log index %v} Start a command %v\n",
+		rf.me, rf.role, rf.currentTerm, rf.GetLastLogIndex(), command)
 
 	return index, term, isLeader
 }
