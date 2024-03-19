@@ -11,6 +11,7 @@ times=$1
 test_case=$2
 # 成功次数
 success=0
+warn=0
 
 # 启动测试并行运行
 for ((i=1; i<=times; i++))
@@ -29,9 +30,16 @@ do
     if grep -q "ok" tmp_$i.out; then
         ((success++))
     fi
+
+    if grep -q "warn" tmp_$i.out; then
+        ((warn++))
+    fi
     # 清理临时文件
-    rm tmp_$i.out
+    # rm tmp_$i.out
 done
 
 # 打印成功次数
 echo "Success: $success out of $times"
+echo "Warn: $warn out of $times"
+
+# grep -r "exit" ./tmp*
