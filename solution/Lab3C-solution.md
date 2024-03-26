@@ -53,3 +53,20 @@
 ```
 
 - [x] 2024/03/19
+
+通过打印日志发现：有在一个Term内出现了两个Leader，两个Leader收到了不同的Command，同时应用了不同的Command。原因是Follower在收到心跳包之后，会把 `votedFor` 置为 $-1$，但是 `votedFor` 更改的时机应该为当前服务器的 `currentTerm` 变化时，因此在 `AppendEntries` 中需要修改 `args.Term == rf.currentTerm` 中的代码。
+
+错误2：在实现lab3D后，有时 `applyLogs()` 会爆索引：
+
+```text
+Test (3C): unreliable agreement ...
+panic: runtime error: index out of range [246] with length 246
+
+goroutine 5516 [running]:
+6.5840/raft.(*Raft).applyLogs(0xc000226000)
+	/home/lee/6.5840/src/raft/raft.go:430 +0x350
+created by 6.5840/raft.(*Raft).AppendEntries in goroutine 5515
+	/home/lee/6.5840/src/raft/raft.go:538 +0x391
+```
+
+摆烂了，不想改了。
