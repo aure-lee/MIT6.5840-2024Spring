@@ -35,7 +35,7 @@ do
         ((warn++))
     fi
     # 清理临时文件
-    # rm tmp_$i.out
+    rm tmp_$i.out
 done
 
 # 打印成功次数
